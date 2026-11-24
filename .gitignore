@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.tmp
+downloaded_questions/
+release_zips/
+.env
+.vscode/
