@@ -29,6 +29,7 @@ BATCHES = {
 OUTPUT_ROOT = "downloaded_questions"
 STATE_FILE = os.path.join(OUTPUT_ROOT, "state_tracker.json")
 CONSECUTIVE_EMPTY_LIMIT = 10  # Stop only after 10 consecutive batches give 0 new questions
+NEET_ALLOWED_SUBJECTS = {"botany", "zoology"}  # NEET Physics & Chemistry are identical to JEE
 
 def sanitize_filename(name):
     return re.sub(r'[\\/*?:"<>|]', "", name).strip()
@@ -312,6 +313,12 @@ def parse_args():
         default=2.5,
         help="Delay in seconds between requests (default: 2.5)"
     )
+    parser.add_argument(
+        "--include-all-neet",
+        action="store_true",
+        default=False,
+        help="Also download Physics & Chemistry for NEET (skipped by default since identical to JEE)"
+    )
     return parser.parse_args()
 
 def main():
@@ -325,8 +332,9 @@ def main():
             print("==================================================")
             print("Select target batch:")
             for idx, name in enumerate(BATCHES.keys(), 1):
-                print(f"  {idx}. {name}")
-            print("  5. All Batches (11th & 12th JEE, 11th & 12th NEET)")
+                note = " (Bio Only: Botany & Zoology)" if "NEET" in name else " (All Subjects: PCM)"
+                print(f"  {idx}. {name}{note}")
+            print("  5. All Batches (Unique Bank: 11th/12th JEE PCM + 11th/12th NEET Bio)")
             
             user_input = input("\nEnter choice (1-5) [Default: 1]: ").strip() or "1"
             if user_input == "5":
@@ -350,7 +358,11 @@ def main():
             target_batches = [("11th JEE", BATCHES["11th JEE"])]
 
     print(f"\nStarting Pipeline for: {[b[0] for b in target_batches]}")
-    print(f"Exhaustion Rule: Stop chapter after {CONSECUTIVE_EMPTY_LIMIT} consecutive zero-new batches (No batch ceiling) | Delay: {args.delay}s\n")
+    print(f"Exhaustion Rule: Stop chapter after {CONSECUTIVE_EMPTY_LIMIT} consecutive zero-new batches (No batch ceiling) | Delay: {args.delay}s")
+    if not args.include_all_neet:
+        print("Subject Filter: JEE = All Subjects | NEET = Biology Only (Botany & Zoology; skips duplicate Physics/Chemistry)\n")
+    else:
+        print("Subject Filter: Downloading ALL subjects for both JEE and NEET\n")
 
     for batch_name, batch_id in target_batches:
         print(f"\n#######################################################")
@@ -367,6 +379,13 @@ def main():
         for sub in subjects:
             sub_name = sub["englishName"]
             sub_id = sub["subjectId"]
+
+            # Filter NEET to Biology only (Botany & Zoology) unless overridden
+            if "neet" in batch_name.lower() and not args.include_all_neet:
+                if sub_name.strip().lower() not in NEET_ALLOWED_SUBJECTS:
+                    print(f"\n>>> [Skipped] '{sub_name}' in {batch_name} (100% duplicate of JEE {sub_name}).")
+                    continue
+
             print(f"\n>>> Subject: {sub_name}")
             chapters = get_chapters(batch_id, sub_id)
             time.sleep(2.0)
