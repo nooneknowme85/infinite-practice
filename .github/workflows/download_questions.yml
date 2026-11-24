@@ -42,7 +42,9 @@ jobs:
         run: |
           python master_downloader.py --batch "${{ github.event.inputs.batch }}" --delay 2.5
 
+      # Package Zips ALWAYS (even if timed out or interrupted)
       - name: Package Zips for Each Batch
+        if: always()
         run: |
           mkdir -p release_zips
           
@@ -66,7 +68,9 @@ jobs:
             cp "downloaded_questions/state_tracker.json" "release_zips/state_tracker.json"
           fi
 
+      # Publish GitHub Release ALWAYS (even if 6-hr timeout or cancelled)
       - name: Create GitHub Release & Upload Zips
+        if: always()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "v${{ github.run_number }}-$(date +'%Y%m%d-%H%M')"
@@ -76,7 +80,7 @@ jobs:
             
             - **Batch Target:** `${{ github.event.inputs.batch }}`
             - **Triggered At:** `$(date -u +'%Y-%m-%d %H:%M:%S UTC')`
-            - **Exhaustion Rule:** Stopped each chapter only after 7 consecutive batches yielded 0 new questions.
+            - **Exhaustion Rule:** 10 consecutive empty batches (No hard batch limit).
             
             ### 📦 Direct Downloads:
             - **11th JEE:** `11th_JEE.zip`
