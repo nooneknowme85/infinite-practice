@@ -28,7 +28,7 @@ BATCHES = {
 
 OUTPUT_ROOT = "downloaded_questions"
 STATE_FILE = os.path.join(OUTPUT_ROOT, "state_tracker.json")
-CONSECUTIVE_EMPTY_LIMIT = 7  # Stop only after 7 consecutive batches give 0 new questions
+CONSECUTIVE_EMPTY_LIMIT = 10  # Stop only after 10 consecutive batches give 0 new questions
 
 def sanitize_filename(name):
     return re.sub(r'[\\/*?:"<>|]', "", name).strip()
@@ -230,14 +230,14 @@ def download_chapter(batch_name, batch_id, exam_category, subject_name, chapter,
     print(f"\n=======================================================")
     print(f"Target: [{batch_name}] > [{subject_name}] > [{chapter_name}]")
     print(f"Available Bank: {total_bank_count} | Currently Downloaded: {current_count}")
-    print(f"Stop Rule: Runs until all questions found OR 7 consecutive batches give 0 new questions")
+    print(f"Exhaustion Rule: Runs without batch limit until {CONSECUTIVE_EMPTY_LIMIT} consecutive batches yield 0 new questions")
     print(f"=======================================================")
 
     consecutive_empty_batches = 0
     batch_idx = 1
-    max_safety_ceiling = 200  # Generous safety limit (up to 18,000 question queries per chapter)
 
-    while len(questions_dict) < total_bank_count and batch_idx <= max_safety_ceiling:
+    # No hard ceiling: runs purely until completion or 10 consecutive zero-new batches
+    while len(questions_dict) < total_bank_count:
         print(f"  -> Batch {batch_idx}: Requesting 90 Qs...", end=" ", flush=True)
         test_id, fallback_qs = start_test(batch_id, exam_category, chapter_id, class_id, subject_id, count=90)
 
@@ -271,7 +271,7 @@ def download_chapter(batch_name, batch_id, exam_category, subject_name, chapter,
         status_tag = "[Solutions & Video]" if solutions_extracted else "[Questions Only]"
         print(f"{status_tag} Received: {len(incoming_qs)} | New: {new_added} | Total: {len(questions_dict)}/{total_bank_count}")
 
-        # Atomic write to save progress continuously
+        # Atomic write to save progress continuously (prevents any data loss or corruption)
         temp_file = out_file + ".tmp"
         with open(temp_file, "w", encoding="utf-8") as f:
             json.dump(list(questions_dict.values()), f, ensure_ascii=False, indent=2)
@@ -280,7 +280,7 @@ def download_chapter(batch_name, batch_id, exam_category, subject_name, chapter,
         # Update in-progress tracker
         TRACKER.mark_chapter_in_progress(batch_id, chapter_id, batch_name, subject_name, chapter_name, len(questions_dict))
 
-        # Check for 7 consecutive empty batches
+        # Check for 10 consecutive empty batches
         if new_added == 0:
             consecutive_empty_batches += 1
             print(f"     ↳ [Notice] 0 new questions in this batch ({consecutive_empty_batches}/{CONSECUTIVE_EMPTY_LIMIT} consecutive)")
@@ -350,7 +350,7 @@ def main():
             target_batches = [("11th JEE", BATCHES["11th JEE"])]
 
     print(f"\nStarting Pipeline for: {[b[0] for b in target_batches]}")
-    print(f"Exhaustion Rule: Stop chapter after {CONSECUTIVE_EMPTY_LIMIT} consecutive zero-new batches | Safe Delay: {args.delay}s\n")
+    print(f"Exhaustion Rule: Stop chapter after {CONSECUTIVE_EMPTY_LIMIT} consecutive zero-new batches (No batch ceiling) | Delay: {args.delay}s\n")
 
     for batch_name, batch_id in target_batches:
         print(f"\n#######################################################")
