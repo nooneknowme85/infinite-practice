@@ -14,13 +14,7 @@ on:
           - '12th JEE'
           - '11th NEET'
           - '12th NEET'
-      max_batches:
-        description: 'Max batches (of 90 questions) per chapter'
-        required: false
-        default: '25'
-        type: string
 
-# Needed to create releases and upload release assets
 permissions:
   contents: write
 
@@ -46,13 +40,12 @@ jobs:
 
       - name: Run Master Downloader
         run: |
-          python master_downloader.py --batch "${{ github.event.inputs.batch }}" --max-batches ${{ github.event.inputs.max_batches }} --delay 2.5
+          python master_downloader.py --batch "${{ github.event.inputs.batch }}" --delay 2.5
 
       - name: Package Zips for Each Batch
         run: |
           mkdir -p release_zips
           
-          # Function to zip a directory if it exists
           zip_batch() {
             local folder_name="$1"
             local zip_name="$2"
@@ -69,7 +62,6 @@ jobs:
           zip_batch "11th NEET" "11th_NEET"
           zip_batch "12th NEET" "12th_NEET"
 
-          # Copy state tracker if available
           if [ -f "downloaded_questions/state_tracker.json" ]; then
             cp "downloaded_questions/state_tracker.json" "release_zips/state_tracker.json"
           fi
@@ -84,10 +76,9 @@ jobs:
             
             - **Batch Target:** `${{ github.event.inputs.batch }}`
             - **Triggered At:** `$(date -u +'%Y-%m-%d %H:%M:%S UTC')`
-            - **Max Batches per Chapter:** `${{ github.event.inputs.max_batches }}`
+            - **Exhaustion Rule:** Stopped each chapter only after 7 consecutive batches yielded 0 new questions.
             
             ### 📦 Direct Downloads:
-            Download the zip files below directly to your device (no expiration):
             - **11th JEE:** `11th_JEE.zip`
             - **12th JEE:** `12th_JEE.zip`
             - **11th NEET:** `11th_NEET.zip`
