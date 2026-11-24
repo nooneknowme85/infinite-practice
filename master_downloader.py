@@ -28,6 +28,7 @@ BATCHES = {
 
 OUTPUT_ROOT = "downloaded_questions"
 STATE_FILE = os.path.join(OUTPUT_ROOT, "state_tracker.json")
+CONSECUTIVE_EMPTY_LIMIT = 7  # Stop only after 7 consecutive batches give 0 new questions
 
 def sanitize_filename(name):
     return re.sub(r'[\\/*?:"<>|]', "", name).strip()
@@ -129,7 +130,6 @@ class StateTracker:
             "downloaded_count": count,
             "completed_at": time.strftime("%Y-%m-%d %H:%M:%S")
         }
-        # Remove from in_progress
         if key in self.state.get("in_progress_chapters", {}):
             del self.state["in_progress_chapters"][key]
         self.save()
@@ -191,7 +191,7 @@ def get_solutions(test_id):
         return r.json().get("data", {}).get("questionsResponses", [])
     return []
 
-def download_chapter(batch_name, batch_id, exam_category, subject_name, chapter, max_batches=25, delay=2.5):
+def download_chapter(batch_name, batch_id, exam_category, subject_name, chapter, delay=2.5):
     chapter_id = chapter["chapterId"]
     class_id = chapter["classId"]
     chapter_name = chapter["englishName"]
@@ -203,7 +203,6 @@ def download_chapter(batch_name, batch_id, exam_category, subject_name, chapter,
         print(f"  [Skipping] '{chapter_name}' is already marked COMPLETED in state tracker.")
         return
 
-    # Folder and file paths
     out_dir = os.path.join(OUTPUT_ROOT, sanitize_filename(batch_name), sanitize_filename(subject_name))
     os.makedirs(out_dir, exist_ok=True)
     out_file = os.path.join(out_dir, f"{sanitize_filename(chapter_name)}.json")
@@ -222,8 +221,7 @@ def download_chapter(batch_name, batch_id, exam_category, subject_name, chapter,
             pass
 
     current_count = len(questions_dict)
-    
-    # If file already has >= total bank count, mark completed and return
+
     if current_count >= total_bank_count and total_bank_count > 0:
         print(f"  [Completed] '{chapter_name}' already has {current_count}/{total_bank_count} questions.")
         TRACKER.mark_chapter_completed(batch_id, chapter_id, batch_name, subject_name, chapter_name, current_count)
@@ -231,13 +229,15 @@ def download_chapter(batch_name, batch_id, exam_category, subject_name, chapter,
 
     print(f"\n=======================================================")
     print(f"Target: [{batch_name}] > [{subject_name}] > [{chapter_name}]")
-    print(f"Available Bank: {total_bank_count} | Existing: {current_count} questions")
+    print(f"Available Bank: {total_bank_count} | Currently Downloaded: {current_count}")
+    print(f"Stop Rule: Runs until all questions found OR 7 consecutive batches give 0 new questions")
     print(f"=======================================================")
 
     consecutive_empty_batches = 0
     batch_idx = 1
+    max_safety_ceiling = 200  # Generous safety limit (up to 18,000 question queries per chapter)
 
-    while len(questions_dict) < total_bank_count and batch_idx <= max_batches:
+    while len(questions_dict) < total_bank_count and batch_idx <= max_safety_ceiling:
         print(f"  -> Batch {batch_idx}: Requesting 90 Qs...", end=" ", flush=True)
         test_id, fallback_qs = start_test(batch_id, exam_category, chapter_id, class_id, subject_id, count=90)
 
@@ -269,22 +269,24 @@ def download_chapter(batch_name, batch_id, exam_category, subject_name, chapter,
                 new_added += 1
 
         status_tag = "[Solutions & Video]" if solutions_extracted else "[Questions Only]"
-        print(f"{status_tag} Received: {len(incoming_qs)} | New: {new_added} | Total Unique: {len(questions_dict)}/{total_bank_count}")
+        print(f"{status_tag} Received: {len(incoming_qs)} | New: {new_added} | Total: {len(questions_dict)}/{total_bank_count}")
 
-        # Atomic file write to avoid corrupted files if stopped midway
+        # Atomic write to save progress continuously
         temp_file = out_file + ".tmp"
         with open(temp_file, "w", encoding="utf-8") as f:
             json.dump(list(questions_dict.values()), f, ensure_ascii=False, indent=2)
         os.replace(temp_file, out_file)
 
-        # Update in-progress state
+        # Update in-progress tracker
         TRACKER.mark_chapter_in_progress(batch_id, chapter_id, batch_name, subject_name, chapter_name, len(questions_dict))
 
-        # Check for saturation (random sampling returned no new questions 4 times in a row)
+        # Check for 7 consecutive empty batches
         if new_added == 0:
             consecutive_empty_batches += 1
-            if consecutive_empty_batches >= 4:
-                print(f"  [Pool Exhausted] 4 consecutive batches returned no new questions. Moving to next chapter.")
+            print(f"     ↳ [Notice] 0 new questions in this batch ({consecutive_empty_batches}/{CONSECUTIVE_EMPTY_LIMIT} consecutive)")
+            if consecutive_empty_batches >= CONSECUTIVE_EMPTY_LIMIT:
+                print(f"  [Chapter Pool Exhausted] {CONSECUTIVE_EMPTY_LIMIT} consecutive batches had 0 new questions.")
+                print(f"  All available questions in rotation for this chapter are captured! Moving to next chapter.")
                 break
         else:
             consecutive_empty_batches = 0
@@ -292,13 +294,9 @@ def download_chapter(batch_name, batch_id, exam_category, subject_name, chapter,
         batch_idx += 1
         time.sleep(delay)
 
-    # If reached bank count or reasonable saturation, mark chapter completed
     final_count = len(questions_dict)
-    if final_count >= total_bank_count or consecutive_empty_batches >= 4:
-        TRACKER.mark_chapter_completed(batch_id, chapter_id, batch_name, subject_name, chapter_name, final_count)
-        print(f"  [DONE] Chapter finished! Saved {final_count} questions to: {out_file}\n")
-    else:
-        print(f"  [PARTIAL] Saved {final_count}/{total_bank_count} questions. Can resume anytime.\n")
+    TRACKER.mark_chapter_completed(batch_id, chapter_id, batch_name, subject_name, chapter_name, final_count)
+    print(f"  [DONE] Finished '{chapter_name}'! Total saved: {final_count} questions.\n")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Smart Resilient PW Infinite Practice Question Downloader")
@@ -307,12 +305,6 @@ def parse_args():
         type=str,
         default=None,
         help="Batch to download: '11th JEE', '12th JEE', '11th NEET', '12th NEET', or 'all'"
-    )
-    parser.add_argument(
-        "--max-batches",
-        type=int,
-        default=25,
-        help="Maximum 90-question batches per chapter (default: 25)"
     )
     parser.add_argument(
         "--delay",
@@ -325,10 +317,8 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Determine batch
     batch_arg = args.batch
     if not batch_arg:
-        # Check if running interactively
         if sys.stdin.isatty():
             print("==================================================")
             print("   PW INFINITE PRACTICE - SMART RESILIENT RUNNER  ")
@@ -352,7 +342,6 @@ def main():
     if batch_arg.lower() == "all":
         target_batches = list(BATCHES.items())
     else:
-        # Find match
         matched = [(k, v) for k, v in BATCHES.items() if k.lower() == batch_arg.lower()]
         if matched:
             target_batches = matched
@@ -360,8 +349,8 @@ def main():
             print(f"Unknown batch '{batch_arg}'. Valid options: {list(BATCHES.keys())} or 'all'. Defaulting to 11th JEE.")
             target_batches = [("11th JEE", BATCHES["11th JEE"])]
 
-    print(f"\nStarting Download Pipeline for: {[b[0] for b in target_batches]}")
-    print(f"Max Batches per Chapter: {args.max_batches} | Safe Delay: {args.delay}s\n")
+    print(f"\nStarting Pipeline for: {[b[0] for b in target_batches]}")
+    print(f"Exhaustion Rule: Stop chapter after {CONSECUTIVE_EMPTY_LIMIT} consecutive zero-new batches | Safe Delay: {args.delay}s\n")
 
     for batch_name, batch_id in target_batches:
         print(f"\n#######################################################")
@@ -393,13 +382,12 @@ def main():
                     exam_category=exam_category,
                     subject_name=sub_name,
                     chapter=chap,
-                    max_batches=args.max_batches,
                     delay=args.delay
                 )
                 time.sleep(1.5)
 
     print("\n=======================================================")
-    print("All tasks finished! Check 'downloaded_questions/' folder.")
+    print("All tasks completed! Check 'downloaded_questions/' folder.")
     print("=======================================================")
 
 if __name__ == "__main__":
