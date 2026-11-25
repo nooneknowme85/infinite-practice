@@ -1,0 +1,112 @@
+name: Recheck Missing Questions (Delta Release)
+
+on:
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: 'Select Batch to Recheck'
+        required: true
+        type: choice
+        default: 'all'
+        options:
+          - 'all'
+          - '11th JEE'
+          - '12th JEE'
+          - '11th NEET'
+          - '12th NEET'
+      min_missing:
+        description: 'Only recheck chapters missing at least X questions'
+        required: false
+        default: '1'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  recheck-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download Existing Releases & Recheck Missing Questions
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python recheck_missing.py --download-releases --batch "${{ github.event.inputs.batch }}" --min-missing ${{ github.event.inputs.min_missing }} --delay 2.5
+
+      - name: Package New-Only Delta Zip & Updated Zips
+        if: always()
+        run: |
+          mkdir -p release_zips
+
+          # 1. Zip ONLY the newly discovered questions
+          if [ -d "new_questions_only" ] && [ "$(ls -A new_questions_only)" ]; then
+            echo "Packaging new_questions_only.zip..."
+            (cd "new_questions_only" && zip -r "../release_zips/new_questions_only.zip" .)
+          fi
+
+          # 2. Zip full updated batches (if any)
+          zip_batch() {
+            local folder_name="$1"
+            local zip_name="$2"
+            if [ -d "downloaded_questions/$folder_name" ]; then
+              (cd "downloaded_questions" && zip -r "../release_zips/updated_$zip_name.zip" "$folder_name")
+            fi
+          }
+
+          if [ -d "new_questions_only/11th JEE" ]; then zip_batch "11th JEE" "11th_JEE"; fi
+          if [ -d "new_questions_only/12th JEE" ]; then zip_batch "12th JEE" "12th_JEE"; fi
+          if [ -d "new_questions_only/11th NEET" ]; then zip_batch "11th NEET" "11th_NEET"; fi
+          if [ -d "new_questions_only/12th NEET" ]; then zip_batch "12th NEET" "12th_NEET"; fi
+
+          if [ -f "recheck_report.json" ]; then
+            cp "recheck_report.json" "release_zips/recheck_report.json"
+          fi
+
+      - name: Generate Release Metadata
+        id: meta
+        if: always()
+        run: |
+          echo "tag_name=recheck-v${{ github.run_number }}-$(date -u +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release with New Questions
+        if: always()
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag_name }}
+          name: "PW Recheck (New Questions Only) [${{ github.event.inputs.batch }}] - Build #${{ github.run_number }}"
+          body: |
+            ## 🔄 PW Infinite Practice - Recheck & Delta Update
+
+            - **Batch Checked:** `${{ github.event.inputs.batch }}`
+            - **Triggered At:** `${{ steps.meta.outputs.timestamp }}`
+            - **Minimum Missing Threshold:** `${{ github.event.inputs.min_missing }}`
+            - **Order:** Sorted in **decreasing order** of missing questions per chapter.
+            - **Strategy:** Targeted difficulty querying (`Easy` / `Medium` / `Hard`) + 10-consecutive-empty-batch exhaustion.
+
+            ### 📦 Attached Files:
+            - **`new_questions_only.zip`** — Contains **ONLY the brand-new questions** discovered during this recheck!
+            - **`updated_<Batch>.zip`** — Full merged chapters (previous questions + new questions) for batches that had updates.
+            - **`recheck_report.json`** — Exact before/after count for every rechecked chapter.
+          files: |
+            release_zips/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
