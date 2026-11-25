@@ -39,8 +39,10 @@ jobs:
           pip install -r requirements.txt
 
       - name: Run Master Downloader
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python master_downloader.py --batch "${{ github.event.inputs.batch }}" --delay 2.5
+          python master_downloader.py --download-releases --batch "${{ github.event.inputs.batch }}" --delay 2.5
 
       # Package Zips ALWAYS (even if timed out or interrupted)
       - name: Package Zips for Each Batch
