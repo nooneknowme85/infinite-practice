@@ -218,7 +218,9 @@ def download_existing_releases(repo, token, dest_root=OUTPUT_ROOT):
     target_zip_names = {"11th_JEE.zip", "12th_JEE.zip", "11th_NEET.zip", "12th_NEET.zip"}
     merged_completed = {}
 
-    for rel in releases:
+    # Process oldest to newest so newer releases merge cleanly on top of older ones
+    for rel in reversed(releases):
+        rel_id = rel.get("id", rel.get("tag_name", ""))
         for asset in rel.get("assets", []):
             name = asset.get("name", "")
             dl_url = asset.get("url")
@@ -232,16 +234,15 @@ def download_existing_releases(repo, token, dest_root=OUTPUT_ROOT):
                     try:
                         st = resp.json()
                         for k, v in st.get("completed_chapters", {}).items():
-                            if k not in merged_completed:
-                                merged_completed[k] = v
+                            merged_completed[k] = v
                     except Exception:
                         pass
-            elif (name in target_zip_names or name.startswith("updated_") or name == "new_questions_only.zip") and name not in seen_assets:
-                seen_assets.add(name)
+            elif (name in target_zip_names or name.startswith("updated_") or name == "new_questions_only.zip") and (rel_id, name) not in seen_assets:
+                seen_assets.add((rel_id, name))
                 print(f"  -> Downloading {name} from release '{rel.get('tag_name')}'...")
                 resp = requests.get(dl_url, headers=dl_headers, stream=True, timeout=120)
                 if resp.status_code == 200:
-                    local_zip = os.path.join("temp_release_zips", name)
+                    local_zip = os.path.join("temp_release_zips", f"{rel_id}_{name}")
                     with open(local_zip, "wb") as f:
                         for chunk in resp.iter_content(chunk_size=1024 * 1024):
                             if chunk:
