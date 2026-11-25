@@ -68,18 +68,26 @@ jobs:
             cp "downloaded_questions/state_tracker.json" "release_zips/state_tracker.json"
           fi
 
+      # Generate clean tag & timestamp in bash
+      - name: Generate Release Metadata
+        id: meta
+        if: always()
+        run: |
+          echo "tag_name=v${{ github.run_number }}-$(date -u +'%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+
       # Publish GitHub Release ALWAYS (even if 6-hr timeout or cancelled)
       - name: Create GitHub Release & Upload Zips
         if: always()
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "v${{ github.run_number }}-$(date +'%Y%m%d-%H%M')"
+          tag_name: ${{ steps.meta.outputs.tag_name }}
           name: "PW Practice Questions [${{ github.event.inputs.batch }}] - Build #${{ github.run_number }}"
           body: |
             ## 📚 PW Infinite Practice Question Bank
             
             - **Batch Target:** `${{ github.event.inputs.batch }}`
-            - **Triggered At:** `$(date -u +'%Y-%m-%d %H:%M:%S UTC')`
+            - **Triggered At:** `${{ steps.meta.outputs.timestamp }}`
             - **Exhaustion Rule:** 10 consecutive empty batches (No hard batch limit).
             - **Subject Filter:** JEE = All Subjects (PCM) | NEET = Biology Only (Botany & Zoology; duplicate Physics & Chemistry skipped).
             
