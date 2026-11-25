@@ -1,10 +1,7 @@
 import os
-import sys
 import json
 import time
-import zipfile
 import argparse
-import requests
 
 from master_downloader import (
     BATCHES,
@@ -12,6 +9,9 @@ from master_downloader import (
     OUTPUT_ROOT,
     CONSECUTIVE_EMPTY_LIMIT,
     sanitize_filename,
+    atomic_write_json,
+    load_existing_questions,
+    download_existing_releases,
     get_subjects,
     get_chapters,
     start_test,
@@ -21,111 +21,6 @@ from master_downloader import (
 
 NEW_ONLY_ROOT = "new_questions_only"
 REPORT_FILE = "recheck_report.json"
-
-
-def atomic_write_json(filepath, data):
-    """Write JSON atomically to prevent file corruption if stopped midway."""
-    os.makedirs(os.path.dirname(filepath) or ".", exist_ok=True)
-    temp_file = filepath + ".tmp"
-    with open(temp_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(temp_file, filepath)
-
-
-def load_existing_questions(filepath):
-    """Load existing questions keyed by questionId and count them by difficulty."""
-    questions_dict = {}
-    diff_counts = {1: 0, 2: 0, 3: 0}
-    if os.path.exists(filepath):
-        try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                existing = json.load(f)
-                for q in existing:
-                    qid = q.get("questionId")
-                    if qid and qid not in questions_dict:
-                        questions_dict[qid] = q
-                        d = q.get("difficulty")
-                        if d in diff_counts:
-                            diff_counts[d] += 1
-        except Exception as e:
-            print(f"  [Warning] Could not read {filepath}: {e}")
-    return questions_dict, diff_counts
-
-
-def merge_zip_into_folder(zip_path, dest_root):
-    """Extract a batch zip into dest_root, merging any overlapping chapter JSONs."""
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        for member in zf.infolist():
-            if member.is_dir() or not member.filename.endswith(".json"):
-                continue
-            target_path = os.path.join(dest_root, member.filename)
-            raw_bytes = zf.read(member.filename)
-            if not os.path.exists(target_path):
-                os.makedirs(os.path.dirname(target_path), exist_ok=True)
-                with open(target_path, "wb") as out_f:
-                    out_f.write(raw_bytes)
-            else:
-                # Merge by questionId so newer/older releases combine cleanly
-                try:
-                    incoming = json.loads(raw_bytes.decode("utf-8"))
-                    if isinstance(incoming, list):
-                        existing_dict, _ = load_existing_questions(target_path)
-                        for q in incoming:
-                            qid = q.get("questionId")
-                            if qid and qid not in existing_dict:
-                                existing_dict[qid] = q
-                        atomic_write_json(target_path, list(existing_dict.values()))
-                except Exception:
-                    pass
-
-
-def download_existing_releases(repo, token, dest_root=OUTPUT_ROOT):
-    """Download existing batch zip assets from GitHub Releases so CI can recheck them."""
-    if not repo:
-        print("[Release Sync] No repo specified, skipping release download.")
-        return
-    headers = {"Accept": "application/vnd.github+json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
-    api_url = f"https://api.github.com/repos/{repo}/releases?per_page=20"
-    print(f"[Release Sync] Checking existing releases in {repo}...")
-    r = requests.get(api_url, headers=headers, timeout=30)
-    if r.status_code != 200:
-        print(f"[Release Sync] Could not fetch releases ({r.status_code}): {r.text[:150]}")
-        return
-
-    releases = r.json()
-    os.makedirs("temp_release_zips", exist_ok=True)
-    os.makedirs(dest_root, exist_ok=True)
-
-    # Track the latest asset downloaded per batch zip name (e.g. 11th_JEE.zip)
-    seen_assets = set()
-    target_zip_names = {"11th_JEE.zip", "12th_JEE.zip", "11th_NEET.zip", "12th_NEET.zip"}
-
-    for rel in releases:
-        for asset in rel.get("assets", []):
-            name = asset.get("name", "")
-            # Download batch zips and any previous delta zips to get complete history
-            if (name in target_zip_names or name.startswith("updated_") or name == "new_questions_only.zip") and name not in seen_assets:
-                seen_assets.add(name)
-                dl_url = asset.get("url")
-                print(f"  -> Downloading {name} from release '{rel.get('tag_name')}'...")
-                dl_headers = dict(headers)
-                dl_headers["Accept"] = "application/octet-stream"
-                resp = requests.get(dl_url, headers=dl_headers, stream=True, timeout=120)
-                if resp.status_code == 200:
-                    local_zip = os.path.join("temp_release_zips", name)
-                    with open(local_zip, "wb") as f:
-                        for chunk in resp.iter_content(chunk_size=1024 * 1024):
-                            if chunk:
-                                f.write(chunk)
-                    print(f"     Extracting/merging {name} into '{dest_root}/'...")
-                    merge_zip_into_folder(local_zip, dest_root)
-                else:
-                    print(f"     [Warning] Failed to download {name} ({resp.status_code})")
-
-    print(f"[Release Sync] Finished syncing {len(seen_assets)} release archive(s).\n")
 
 
 def fetch_batches_for_difficulty(
