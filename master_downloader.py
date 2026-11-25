@@ -158,8 +158,10 @@ def get_chapters(batch_id, subject_id):
             return res.get("data", [])
     return []
 
-def start_test(batch_id, exam_category, chapter_id, class_id, subject_id, count=90):
+def start_test(batch_id, exam_category, chapter_id, class_id, subject_id, count=90, difficulty_level=None):
     """Generate a 90-question practice test."""
+    if difficulty_level is None:
+        difficulty_level = [1, 2, 3]
     url = f"{BASE_API}/test-service/{batch_id}/infinitePractice/v2/start-test"
     payload = {
         "exams": [],
@@ -168,7 +170,7 @@ def start_test(batch_id, exam_category, chapter_id, class_id, subject_id, count=
         "questionsCount": count,
         "chapters": [{"chapterId": chapter_id, "classId": class_id}],
         "subject": subject_id,
-        "difficultyLevel": [1, 2, 3],
+        "difficultyLevel": difficulty_level,
         "isReattempt": False,
         "language": "English"
     }
