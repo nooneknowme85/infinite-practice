@@ -98,6 +98,11 @@ class StateTracker:
             try:
                 with open(self.filepath, "r", encoding="utf-8") as f:
                     self.state = json.load(f)
+                # Purge any broken 0-question entries from earlier runs
+                comp = self.state.get("completed_chapters", {})
+                self.state["completed_chapters"] = {
+                    k: v for k, v in comp.items() if v.get("downloaded_count", 0) > 0
+                }
             except Exception:
                 pass
 
@@ -108,9 +113,14 @@ class StateTracker:
             json.dump(self.state, f, ensure_ascii=False, indent=2)
         os.replace(temp_file, self.filepath)
 
-    def is_chapter_completed(self, batch_id, chapter_id):
+    def is_chapter_completed(self, batch_id, chapter_id, out_file=None):
         key = f"{batch_id}:{chapter_id}"
-        return key in self.state.get("completed_chapters", {})
+        entry = self.state.get("completed_chapters", {}).get(key)
+        if not entry or entry.get("downloaded_count", 0) <= 0:
+            return False
+        if out_file and not os.path.exists(out_file):
+            return False
+        return True
 
     def mark_chapter_in_progress(self, batch_id, chapter_id, batch_name, subject_name, chapter_name, count):
         key = f"{batch_id}:{chapter_id}"
@@ -227,14 +237,15 @@ def download_existing_releases(repo, token, dest_root=OUTPUT_ROOT):
             dl_headers = dict(headers)
             dl_headers["Accept"] = "application/octet-stream"
 
-            # Merge completed chapters from all state_tracker.json assets across releases
+            # Merge completed chapters from all state_tracker.json assets across releases (ignore 0-count entries)
             if name == "state_tracker.json":
                 resp = requests.get(dl_url, headers=dl_headers, timeout=30)
                 if resp.status_code == 200:
                     try:
                         st = resp.json()
                         for k, v in st.get("completed_chapters", {}).items():
-                            merged_completed[k] = v
+                            if v.get("downloaded_count", 0) > 0:
+                                merged_completed[k] = v
                     except Exception:
                         pass
             elif (name in target_zip_names or name.startswith("updated_") or name == "new_questions_only.zip") and (rel_id, name) not in seen_assets:
@@ -323,14 +334,14 @@ def download_chapter(batch_name, batch_id, exam_category, subject_name, chapter,
     subject_id = chapter["subjectId"]
     total_bank_count = int(chapter.get("questionCount", 0))
 
-    # Fast skip if already completed according to state
-    if TRACKER.is_chapter_completed(batch_id, chapter_id):
-        print(f"  [Skipping] '{chapter_name}' is already marked COMPLETED in state tracker.")
-        return
-
     out_dir = os.path.join(OUTPUT_ROOT, sanitize_filename(batch_name), sanitize_filename(subject_name))
     os.makedirs(out_dir, exist_ok=True)
     out_file = os.path.join(out_dir, f"{sanitize_filename(chapter_name)}.json")
+
+    # Fast skip only if marked completed AND file actually exists with >0 questions
+    if TRACKER.is_chapter_completed(batch_id, chapter_id, out_file=out_file):
+        print(f"  [Skipping] '{chapter_name}' is already marked COMPLETED in state tracker.")
+        return
 
     # Load existing questions for this chapter
     questions_dict = {}
@@ -360,6 +371,7 @@ def download_chapter(batch_name, batch_id, exam_category, subject_name, chapter,
 
     consecutive_empty_batches = 0
     batch_idx = 1
+    aborted_on_error = False
 
     # No hard ceiling: runs purely until completion or 10 consecutive zero-new batches
     while len(questions_dict) < total_bank_count:
@@ -367,7 +379,8 @@ def download_chapter(batch_name, batch_id, exam_category, subject_name, chapter,
         test_id, fallback_qs = start_test(batch_id, exam_category, chapter_id, class_id, subject_id, count=90)
 
         if not test_id:
-            print("Failed to start test. Pausing 5s...")
+            print("Failed to start test (rate-limit/network). Leaving chapter incomplete for retry.")
+            aborted_on_error = True
             time.sleep(5)
             break
 
@@ -420,8 +433,12 @@ def download_chapter(batch_name, batch_id, exam_category, subject_name, chapter,
         time.sleep(delay)
 
     final_count = len(questions_dict)
-    TRACKER.mark_chapter_completed(batch_id, chapter_id, batch_name, subject_name, chapter_name, final_count)
-    print(f"  [DONE] Finished '{chapter_name}'! Total saved: {final_count} questions.\n")
+    if not aborted_on_error and final_count > 0:
+        TRACKER.mark_chapter_completed(batch_id, chapter_id, batch_name, subject_name, chapter_name, final_count)
+        print(f"  [DONE] Finished '{chapter_name}'! Total saved: {final_count} questions.\n")
+    else:
+        TRACKER.mark_chapter_in_progress(batch_id, chapter_id, batch_name, subject_name, chapter_name, final_count)
+        print(f"  [INCOMPLETE] '{chapter_name}' stopped early ({final_count} saved) — will resume automatically next run.\n")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Smart Resilient PW Infinite Practice Question Downloader")
